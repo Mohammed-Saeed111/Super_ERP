@@ -6,7 +6,7 @@ export const Icon = ({ name, size = 18, className = "", style = {} }) => {
     verticalAlign: 'middle',
     flexShrink: 0,
     ...style
-  };
+  }; 
 
   switch (name) {
     case 'dashboard':
