@@ -2,7 +2,7 @@ const Lead = require('../models/Lead');
 const Ticket = require('../models/Ticket');
 const Campaign = require('../models/Campaign');
 const User = require('../models/User');
-const { updateExpiredCampaigns } = require('../services/campaignHelper');
+const { updateExpiredCampaigns } = require('../helpers/campaignHelper');
 
 // @desc    Get system wide analytics
 // @route   GET /api/analytics

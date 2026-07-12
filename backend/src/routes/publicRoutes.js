@@ -4,7 +4,7 @@ const Campaign = require('../models/Campaign');
 const Lead = require('../models/Lead');
 const User = require('../models/User');
 const crypto = require('crypto');
-const { updateExpiredCampaigns } = require('../services/campaignHelper');
+const { updateExpiredCampaigns } = require('../helpers/campaignHelper');
 
 // Round-robin assignment helper
 const assignRoundRobin = async () => {

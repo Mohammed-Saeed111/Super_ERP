@@ -1,5 +1,5 @@
 const Campaign = require('../models/Campaign');
-const { updateExpiredCampaigns } = require('../services/campaignHelper');
+const { updateExpiredCampaigns } = require('../helpers/campaignHelper');
 
 // @desc    Get all campaigns
 // @route   GET /api/campaigns
