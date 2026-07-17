@@ -5,6 +5,10 @@ const DetailedSchedule = require('../models/DetailedSchedule');
 const KPI = require('../models/KPI');
 const Training = require('../models/Training');
 const JobVacancy = require('../models/JobVacancy');
+const PayrollEntry = require('../models/PayrollEntry');
+const PayrollAlert = require('../models/PayrollAlert');
+const EmployeeLoan = require('../models/EmployeeLoan');
+const { put } = require('@vercel/blob');
 const Candidate = require('../models/Candidate');
 const Partnership = require('../models/Partnership');
 const Email = require('../models/Email');
@@ -12,6 +16,7 @@ const LeaveRequest = require('../models/LeaveRequest');
 const BenefitSuggestion = require('../models/BenefitSuggestion');
 const AuxLog = require('../models/AuxLog');
 const AuxSchedule = require('../models/AuxSchedule');
+const { sendEmail, getGlobalEmailConfig } = require('../services/emailService');
 
 // Default doc keys that are always stored in govDocs (not customGovDocs)
 const DEFAULT_DOC_KEYS = ['nationalId', 'socialInsurance', 'militaryStatus', 'graduationCertificate', 'criminalRecord'];
@@ -31,8 +36,27 @@ exports.sendEmail = async (req, res) => {
       subject,
       body,
       parentId: parentId || null,
-      isReply: !!parentId
+      isReply: !!parentId,
+      fromEmail: req.user.smtpUser || req.user.email,
+      toEmail: recipient.email
     });
+
+    try {
+      const globalConfig = await getGlobalEmailConfig();
+      await sendEmail(req.user, {
+        to: recipient.email,
+        subject: subject,
+        text: body,
+        html: `<div style="font-family:Arial,Helvetica,sans-serif;white-space:pre-wrap;">${body}</div>`
+      }, globalConfig);
+      emailObj.status = 'sent';
+    } catch (emailErr) {
+      console.error('Failed to send email:', emailErr);
+      emailObj.status = 'failed';
+      emailObj.providerError = emailErr.message;
+    }
+
+    await emailObj.save();
 
     // Populate sender info for the response
     await emailObj.populate('senderId', 'firstName lastName email role');
@@ -46,7 +70,6 @@ exports.sendEmail = async (req, res) => {
 
 exports.getInbox = async (req, res) => {
   try {
-    // Fetch top-level emails AND replies addressed to this user
     const emails = await Email.find({ recipientId: req.user._id })
       .populate('senderId', 'firstName lastName email role')
       .populate('recipientId', 'firstName lastName email role')
@@ -66,6 +89,18 @@ exports.getSent = async (req, res) => {
       .populate('senderId', 'firstName lastName email role')
       .sort({ sentAt: -1 });
     res.json({ success: true, data: emails });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+exports.getEmailPreview = async (req, res) => {
+  try {
+    const email = await Email.findOne({ _id: req.params.id, senderId: req.user._id })
+      .populate('recipientId', 'firstName lastName email role')
+      .populate('senderId', 'firstName lastName email role');
+    if (!email) return res.status(404).json({ message: 'Email not found' });
+    res.json({ success: true, data: email });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -114,7 +149,14 @@ exports.uploadSignedContract = async (req, res) => {
     const targetId = employeeId || req.user._id;
     const contract = await Contract.findOne({ employeeId: targetId });
     if (!contract) return res.status(404).json({ message: 'Contract not found. Create a contract first.' });
-    contract.signedContractFile = `/uploads/gov-docs/${req.file.filename}`;
+    
+    const uniqueFilename = `gov-docs/signed-contract-${Date.now()}-${req.file.originalname}`;
+    const blob = await put(uniqueFilename, req.file.buffer, {
+      access: 'public',
+      contentType: req.file.mimetype,
+    });
+    
+    contract.signedContractFile = blob.url;
     await contract.save();
     res.json({ success: true, fileUrl: contract.signedContractFile, data: contract });
   } catch (err) {
@@ -318,7 +360,13 @@ exports.uploadGovDocFile = async (req, res) => {
       return res.status(404).json({ message: 'Contract not found. Create a contract first.' });
     }
 
-    const fileUrl = `/uploads/gov-docs/${req.file.filename}`;
+    const uniqueFilename = `gov-docs/govdoc-${Date.now()}-${req.file.originalname}`;
+    const blob = await put(uniqueFilename, req.file.buffer, {
+      access: 'public',
+      contentType: req.file.mimetype,
+    });
+    const fileUrl = blob.url;
+    
     const detailsPayload = {
       status: 'Submitted',
       remarks: 'File uploaded – awaiting HR verification',
@@ -590,8 +638,10 @@ exports.updateDetailedSchedule = async (req, res) => {
     const { employeeId, month, defaultShift, defaultOffDays, weeklyOverrides, dailyOverrides } = req.body;
 
     const isHR = ['HRM System Administrator', 'HR Manager', 'Super CRM Administrator'].includes(req.user.role);
-    if (!isHR) {
-      return res.status(403).json({ message: 'Not authorized to change schedules.' });
+    const isOwnSchedule = req.user._id.toString() === employeeId?.toString();
+
+    if (!isHR && !isOwnSchedule) {
+      return res.status(403).json({ message: 'Not authorized to change this schedule.' });
     }
 
     let schedule = await DetailedSchedule.findOne({ employeeId, month });
@@ -613,7 +663,6 @@ exports.updateDetailedSchedule = async (req, res) => {
 
     await schedule.save();
 
-    // Propagate default shift to user profile as well for backward compatibility
     if (defaultShift) {
       await User.findByIdAndUpdate(employeeId, {
         shift: defaultShift,
@@ -1204,6 +1253,78 @@ exports.getAuxSchedules = async (req, res) => {
       .populate('createdBy', 'firstName lastName')
       .populate('updatedBy', 'firstName lastName');
     res.json({ success: true, data: schedules });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+exports.copyScheduleToNextMonth = async (req, res) => {
+  try {
+    const { employeeId, month } = req.body;
+    const isHR = ['HRM System Administrator', 'HR Manager', 'Super CRM Administrator'].includes(req.user.role);
+    const isOwnSchedule = req.user._id.toString() === employeeId?.toString();
+    if (!isHR && !isOwnSchedule) {
+      return res.status(403).json({ message: 'Not authorized.' });
+    }
+
+    const [y, m] = month.split('-').map(Number);
+    const nextMonth = `${y}-${String(m + 1).padStart(2, '0')}`;
+    if (m === 12) nextMonth = `${y + 1}-01`;
+
+    const source = await DetailedSchedule.findOne({ employeeId, month });
+    if (!source) {
+      return res.status(404).json({ message: 'Source schedule not found for the selected month.' });
+    }
+
+    const existing = await DetailedSchedule.findOne({ employeeId, month: nextMonth });
+    if (existing) {
+      return res.status(409).json({ message: 'Schedule already exists for next month. Update it manually.' });
+    }
+
+    const copy = await DetailedSchedule.create({
+      employeeId,
+      month: nextMonth,
+      defaultShift: source.defaultShift,
+      defaultOffDays: source.defaultOffDays,
+      defaultLiveTarget: source.defaultLiveTarget,
+      defaultBreakTarget: source.defaultBreakTarget,
+      defaultTrainingTarget: source.defaultTrainingTarget,
+      defaultCoachingTarget: source.defaultCoachingTarget,
+      weeklyOverrides: source.weeklyOverrides,
+      dailyOverrides: source.dailyOverrides,
+      createdBy: req.user._id
+    });
+
+    res.json({ success: true, data: copy, message: `Schedule copied to ${nextMonth}` });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+exports.sendScheduleReminders = async (req, res) => {
+  try {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+
+    const employees = await User.find({ isActive: true });
+    let remindersSent = 0;
+
+    for (const emp of employees) {
+      const existing = await DetailedSchedule.findOne({ employeeId: emp._id, month: nextMonth });
+      if (!existing) {
+        await Email.create({
+          senderId: req.user._id,
+          recipientId: emp._id,
+          subject: `Reminder: Please set your schedule for ${nextMonth}`,
+          body: `Dear ${emp.firstName},\n\nPlease set your work schedule for ${nextMonth} before the month starts.\n\nGo to Personal Department > Profile & Schedule to update your schedule.\n\nBest regards,\nHR Department`
+        });
+        remindersSent++;
+      }
+    }
+
+    res.json({ success: true, message: `Sent ${remindersSent} schedule reminders for ${nextMonth}.` });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
