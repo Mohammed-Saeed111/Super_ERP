@@ -9,6 +9,7 @@ const {
   getInbox,
   getSent,
   getEmailThread,
+  getEmailPreview,
   markEmailRead,
   upsertContract,
   uploadSignedContract,
@@ -50,7 +51,9 @@ const {
   updateSuggestionStatus,
   getAuxReport,
   upsertAuxSchedule,
-  getAuxSchedules
+  getAuxSchedules,
+  copyScheduleToNextMonth,
+  sendScheduleReminders
 } = require('../controllers/hrmController');
 
 // --- Emails ---
@@ -58,6 +61,7 @@ router.post('/emails', protect, sendEmail);
 router.get('/emails/inbox', protect, getInbox);
 router.get('/emails/sent', protect, getSent);
 router.get('/emails/:id/thread', protect, getEmailThread);
+router.get('/emails/:id/preview', protect, getEmailPreview);
 router.put('/emails/:id/read', protect, markEmailRead);
 
 // --- Contracts & Salaries ---
@@ -96,6 +100,10 @@ router.put('/aux/rtm-flag', protect, updateRtmFlag);
 router.get('/aux/report', protect, getAuxReport);
 router.post('/aux/schedule', protect, upsertAuxSchedule);
 router.get('/aux/schedule', protect, getAuxSchedules);
+
+// Schedule utilities
+router.post('/schedules/copy-next-month', protect, copyScheduleToNextMonth);
+router.post('/schedules/remind', protect, sendScheduleReminders);
 
 // --- Talent Acquisition ---
 router.post('/vacancies', protect, createVacancy);
